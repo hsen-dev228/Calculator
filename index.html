@@ -1,0 +1,849 @@
+import React, { useEffect, useRef, useState, useCallback } from 'react';
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
+import {
+  getFirestore,
+  collection,
+  addDoc,
+  query,
+  onSnapshot,
+  serverTimestamp,
+  doc,
+  getDoc,
+  setDoc,
+  updateDoc,
+  arrayUnion,
+  arrayRemove,
+  deleteDoc,
+  getDocs // Needed for deleting subcollections
+} from 'firebase/firestore';
+import { MessageSquare, User, Send, Loader2, Heart, MessageCircle, X, Edit, Trash2, Image, Home } from 'lucide-react'; // More icons for richer UI
+
+// Define global variables for Firebase config and app ID
+const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+// Confirmation Modal Component
+const ConfirmationModal = ({ message, onConfirm, onCancel }) => {
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 text-center">
+        <p className="text-xl font-semibold text-gray-800 mb-6">{message}</p>
+        <div className="flex justify-center space-x-4 rtl:space-x-reverse">
+          <button
+            onClick={onCancel}
+            className="bg-gray-300 hover:bg-gray-400 text-gray-800 font-bold py-2 px-5 rounded-xl transition duration-200"
+          >
+            إلغاء
+          </button>
+          <button
+            onClick={onConfirm}
+            className="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-5 rounded-xl shadow-md transition duration-300"
+          >
+            تأكيد
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// Comments Modal Component
+const CommentsModal = ({ postId, onClose, db, currentUserId, currentUserDisplayName }) => {
+  const [comments, setComments] = useState([]);
+  const [newCommentContent, setNewCommentContent] = useState('');
+  const [loadingComments, setLoadingComments] = useState(true);
+  const [commentError, setCommentError] = useState(null);
+
+  useEffect(() => {
+    if (!db || !postId) return;
+
+    setLoadingComments(true);
+    setCommentError(null);
+
+    const commentsCollectionRef = collection(db, `artifacts/${appId}/public/data/posts/${postId}/comments`);
+    const q = query(commentsCollectionRef);
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const fetchedComments = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      }));
+      fetchedComments.sort((a, b) => (a.timestamp?.toDate() || 0) - (b.timestamp?.toDate() || 0));
+      setComments(fetchedComments);
+      setLoadingComments(false);
+    }, (e) => {
+      console.error("Error fetching comments:", e);
+      setCommentError("فشل جلب التعليقات.");
+      setLoadingComments(false);
+    });
+
+    return () => unsubscribe();
+  }, [db, postId]);
+
+  const handleAddComment = async (e) => {
+    e.preventDefault();
+    if (!newCommentContent.trim() || !currentUserId || !currentUserDisplayName) {
+      setCommentError("لا يمكن إضافة تعليق فارغ أو المستخدم غير مصادق.");
+      return;
+    }
+    setCommentError(null);
+    try {
+      const commentsCollectionRef = collection(db, `artifacts/${appId}/public/data/posts/${postId}/comments`);
+      await addDoc(commentsCollectionRef, {
+        userId: currentUserId,
+        displayName: currentUserDisplayName,
+        content: newCommentContent,
+        timestamp: serverTimestamp(),
+      });
+      setNewCommentContent('');
+    } catch (e) {
+      console.error("Error adding comment:", e);
+      setCommentError("فشل إضافة التعليق.");
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col">
+        <div className="flex justify-between items-center p-6 border-b border-gray-200">
+          <h3 className="text-2xl font-bold text-gray-800">التعليقات</h3>
+          <button onClick={onClose} className="text-gray-500 hover:text-gray-700 transition duration-200">
+            <X size={24} />
+          </button>
+        </div>
+        <div className="p-6 flex-grow overflow-y-auto custom-scrollbar">
+          {loadingComments && (
+            <div className="flex items-center justify-center py-8 text-indigo-500">
+              <Loader2 className="animate-spin mr-2" size={24} />
+              <p>جاري تحميل التعليقات...</p>
+            </div>
+          )}
+          {commentError && (
+            <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded-xl mb-4" role="alert">
+              {commentError}
+            </div>
+          )}
+          {!loadingComments && comments.length === 0 && (
+            <p className="text-gray-500 text-center py-8">لا توجد تعليقات حتى الآن. كن أول من يعلق!</p>
+          )}
+          <div className="space-y-4">
+            {comments.map((comment) => (
+              <div key={comment.id} className="bg-gray-50 p-3 rounded-xl border border-gray-200">
+                <p className="text-sm text-gray-500 mb-1">
+                  <span className="font-semibold text-indigo-600 break-all">{comment.displayName || comment.userId}</span> •{' '}
+                  {comment.timestamp ? new Date(comment.timestamp.toDate()).toLocaleString('ar-EG', {
+                    year: 'numeric', month: 'short', day: 'numeric',
+                    hour: '2-digit', minute: '2-digit'
+                  }) : 'جاري التحميل...'}
+                </p>
+                <p className="text-gray-800 text-base leading-relaxed whitespace-pre-wrap">{comment.content}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+        <form onSubmit={handleAddComment} className="p-6 border-t border-gray-200 flex space-x-3 rtl:space-x-reverse">
+          <textarea
+            className="flex-grow p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-indigo-400 focus:border-transparent outline-none transition duration-200 resize-y min-h-[50px] max-h-[150px]"
+            placeholder="أضف تعليقًا..."
+            value={newCommentContent}
+            onChange={(e) => setNewCommentContent(e.target.value)}
+          ></textarea>
+          <button
+            type="submit"
+            className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-5 rounded-xl shadow-md transition duration-300 ease-in-out transform hover:scale-105 flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+            disabled={!newCommentContent.trim()}
+          >
+            <Send size={18} />
+            إرسال
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+};
+
+function App() {
+  const [db, setDb] = useState(null);
+  const [auth, setAuth] = useState(null);
+  const [userId, setUserId] = useState(null);
+  const [displayName, setDisplayName] = useState('');
+  const [posts, setPosts] = useState([]);
+  const [newPostContent, setNewPostContent] = useState('');
+  const [newPostImageUrl, setNewPostImageUrl] = useState(''); // New state for image URL
+  const [loading, setLoading] = useState(true);
+  const [authReady, setAuthReady] = useState(false);
+  const [error, setError] = useState(null);
+  const [showCommentsModal, setShowCommentsModal] = useState(false);
+  const [selectedPostId, setSelectedPostId] = useState(null);
+  const [isSettingDisplayName, setIsSettingDisplayName] = useState(false);
+  const [tempDisplayName, setTempDisplayName] = useState('');
+  const [editingPostId, setEditingPostId] = useState(null); // State for editing post
+  const [editedPostContent, setEditedPostContent] = useState(''); // State for edited content
+  const [editedPostImageUrl, setEditedPostImageUrl] = useState(''); // State for edited image URL
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [postToDeleteId, setPostToDeleteId] = useState(null);
+  const [currentPage, setCurrentPage] = useState('feed'); // 'feed' or 'profile'
+
+  // Initialize Firebase and handle authentication
+  useEffect(() => {
+    try {
+      const app = initializeApp(firebaseConfig);
+      const firestore = getFirestore(app);
+      const firebaseAuth = getAuth(app);
+
+      setDb(firestore);
+      setAuth(firebaseAuth);
+
+      const unsubscribe = onAuthStateChanged(firebaseAuth, async (user) => {
+        if (user) {
+          setUserId(user.uid);
+          const userProfileRef = doc(firestore, `artifacts/${appId}/users/${user.uid}/profile/data`);
+          const userProfileSnap = await getDoc(userProfileRef);
+          if (userProfileSnap.exists() && userProfileSnap.data().displayName) {
+            setDisplayName(userProfileSnap.data().displayName);
+          } else {
+            const defaultDisplayName = `مستخدم_${user.uid.substring(0, 6)}`;
+            await setDoc(userProfileRef, { displayName: defaultDisplayName }, { merge: true });
+            setDisplayName(defaultDisplayName);
+          }
+          setAuthReady(true);
+        } else {
+          try {
+            if (initialAuthToken) {
+              await signInWithCustomToken(firebaseAuth, initialAuthToken);
+            } else {
+              await signInAnonymously(firebaseAuth);
+            }
+          } catch (e) {
+            console.error("Error during anonymous sign-in or custom token sign-in:", e);
+            setError("فشل تسجيل الدخول. يرجى المحاولة مرة أخرى.");
+            setLoading(false);
+          }
+        }
+      });
+
+      return () => unsubscribe();
+    } catch (e) {
+      console.error("Error initializing Firebase:", e);
+      setError("فشل تهيئة Firebase. يرجى التحقق من التكوين.");
+      setLoading(false);
+    }
+  }, []);
+
+  // Fetch posts when Firebase is ready and user is authenticated
+  useEffect(() => {
+    if (db && authReady) {
+      setLoading(true);
+      setError(null);
+      const postsCollectionRef = collection(db, `artifacts/${appId}/public/data/posts`);
+      const q = query(postsCollectionRef);
+
+      const unsubscribe = onSnapshot(q, (snapshot) => {
+        const fetchedPosts = snapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data()
+        }));
+        fetchedPosts.sort((a, b) => (b.timestamp?.toDate() || 0) - (a.timestamp?.toDate() || 0));
+        setPosts(fetchedPosts);
+        setLoading(false);
+      }, (e) => {
+        console.error("Error fetching posts:", e);
+        setError("فشل جلب المنشورات. يرجى المحاولة مرة أخرى.");
+        setLoading(false);
+      });
+
+      return () => unsubscribe();
+    }
+  }, [db, authReady, appId]);
+
+  // Handle new post submission
+  const handlePostSubmit = async (e) => {
+    e.preventDefault();
+    if (!newPostContent.trim() && !newPostImageUrl.trim()) {
+      setError("لا يمكن نشر منشور فارغ أو بدون محتوى.");
+      return;
+    }
+    if (!userId || !db || !displayName) {
+      setError("المستخدم غير مصادق.");
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      const postsCollectionRef = collection(db, `artifacts/${appId}/public/data/posts`);
+      await addDoc(postsCollectionRef, {
+        userId: userId,
+        displayName: displayName,
+        content: newPostContent,
+        imageUrl: newPostImageUrl.trim() ? newPostImageUrl : null, // Store image URL if provided
+        timestamp: serverTimestamp(),
+        likes: [],
+      });
+      setNewPostContent('');
+      setNewPostImageUrl('');
+    } catch (e) {
+      console.error("Error adding document:", e);
+      setError("فشل نشر المنشور. يرجى المحاولة مرة أخرى.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Handle like/unlike functionality
+  const handleLikeToggle = useCallback(async (postId, currentLikes) => {
+    if (!userId || !db) {
+      setError("يجب تسجيل الدخول للإعجاب بالمنشورات.");
+      return;
+    }
+    setError(null);
+    const postRef = doc(db, `artifacts/${appId}/public/data/posts`, postId);
+    const hasLiked = currentLikes.includes(userId);
+
+    try {
+      if (hasLiked) {
+        await updateDoc(postRef, {
+          likes: arrayRemove(userId)
+        });
+      } else {
+        await updateDoc(postRef, {
+          likes: arrayUnion(userId)
+        });
+      }
+    } catch (e) {
+      console.error("Error toggling like:", e);
+      setError("فشل تحديث الإعجاب.");
+    }
+  }, [userId, db, appId]);
+
+  // Open comments modal
+  const openCommentsModal = (postId) => {
+    setSelectedPostId(postId);
+    setShowCommentsModal(true);
+  };
+
+  // Close comments modal
+  const closeCommentsModal = () => {
+    setShowCommentsModal(false);
+    setSelectedPostId(null);
+  };
+
+  // Handle display name update
+  const handleDisplayNameUpdate = async (e) => {
+    e.preventDefault();
+    if (!tempDisplayName.trim() || !userId || !db) {
+      setError("اسم العرض لا يمكن أن يكون فارغًا.");
+      return;
+    }
+    setError(null);
+    setIsSettingDisplayName(true);
+    try {
+      const userProfileRef = doc(db, `artifacts/${appId}/users/${userId}/profile/data`);
+      await setDoc(userProfileRef, { displayName: tempDisplayName }, { merge: true });
+      setDisplayName(tempDisplayName);
+      setIsSettingDisplayName(false);
+      // Update display name on existing posts by this user (optional, but good for consistency)
+      // This would require a query and batch update, which is more complex for a demo.
+      // For simplicity, new posts will use the updated display name.
+    } catch (e) {
+      console.error("Error updating display name:", e);
+      setError("فشل تحديث اسم العرض.");
+      setIsSettingDisplayName(false);
+    }
+  };
+
+  // Start editing a post
+  const startEditingPost = (post) => {
+    setEditingPostId(post.id);
+    setEditedPostContent(post.content);
+    setEditedPostImageUrl(post.imageUrl || '');
+  };
+
+  // Save edited post
+  const saveEditedPost = async () => {
+    if (!editedPostContent.trim() && !editedPostImageUrl.trim()) {
+      setError("لا يمكن حفظ منشور فارغ أو بدون محتوى.");
+      return;
+    }
+    if (!db || !editingPostId) return;
+    setError(null);
+    setLoading(true);
+    try {
+      const postRef = doc(db, `artifacts/${appId}/public/data/posts`, editingPostId);
+      await updateDoc(postRef, {
+        content: editedPostContent,
+        imageUrl: editedPostImageUrl.trim() ? editedPostImageUrl : null,
+      });
+      setEditingPostId(null);
+      setEditedPostContent('');
+      setEditedPostImageUrl('');
+    } catch (e) {
+      console.error("Error updating post:", e);
+      setError("فشل تحديث المنشور.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Cancel editing
+  const cancelEditingPost = () => {
+    setEditingPostId(null);
+    setEditedPostContent('');
+    setEditedPostImageUrl('');
+  };
+
+  // Initiate delete confirmation
+  const confirmDeletePost = (postId) => {
+    setPostToDeleteId(postId);
+    setShowDeleteConfirm(true);
+  };
+
+  // Handle actual post deletion
+  const handleDeletePost = async () => {
+    if (!db || !postToDeleteId) return;
+    setError(null);
+    setShowDeleteConfirm(false); // Close confirmation modal
+    setLoading(true);
+    try {
+      // First, delete all comments in the subcollection
+      const commentsCollectionRef = collection(db, `artifacts/${appId}/public/data/posts/${postToDeleteId}/comments`);
+      const commentsSnapshot = await getDocs(commentsCollectionRef);
+      const deleteCommentPromises = commentsSnapshot.docs.map(commentDoc => deleteDoc(commentDoc.ref));
+      await Promise.all(deleteCommentPromises);
+
+      // Then, delete the post document itself
+      const postRef = doc(db, `artifacts/${appId}/public/data/posts`, postToDeleteId);
+      await deleteDoc(postRef);
+      setPostToDeleteId(null);
+    } catch (e) {
+      console.error("Error deleting post:", e);
+      setError("فشل حذف المنشور. يرجى المحاولة مرة أخرى.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Filter posts for profile page
+  const userPosts = posts.filter(post => post.userId === userId);
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex flex-col items-center py-8 px-4 font-sans text-gray-800">
+      <script src="https://cdn.tailwindcss.com"></script>
+      <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet" />
+      <style>
+        {`
+          body {
+            font-family: 'Inter', sans-serif;
+          }
+          /* Custom scrollbar for better aesthetics */
+          .custom-scrollbar::-webkit-scrollbar {
+            width: 8px;
+          }
+          .custom-scrollbar::-webkit-scrollbar-track {
+            background: #f1f1f1;
+            border-radius: 10px;
+          }
+          .custom-scrollbar::-webkit-scrollbar-thumb {
+            background: #888;
+            border-radius: 10px;
+          }
+          .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+            background: #555;
+          }
+        `}
+      </style>
+
+      <div className="w-full max-w-3xl bg-white rounded-3xl shadow-xl p-8 space-y-8 border border-gray-200">
+        <h1 className="text-5xl font-extrabold text-center text-indigo-700 mb-8 flex items-center justify-center gap-4">
+          <MessageSquare className="w-12 h-12 text-indigo-500" />
+          منصة التواصل الاجتماعي
+        </h1>
+
+        {error && (
+          <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded-xl relative" role="alert">
+            <strong className="font-bold">خطأ!</strong>
+            <span className="block sm:inline ml-2">{error}</span>
+          </div>
+        )}
+
+        {/* Navigation */}
+        <div className="flex justify-center gap-4 mb-8">
+          <button
+            onClick={() => setCurrentPage('feed')}
+            className={`flex items-center gap-2 py-2 px-5 rounded-xl font-semibold transition duration-300 ease-in-out ${
+              currentPage === 'feed' ? 'bg-indigo-600 text-white shadow-md' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+            }`}
+          >
+            <Home size={20} />
+            الخلاصة الرئيسية
+          </button>
+          <button
+            onClick={() => setCurrentPage('profile')}
+            className={`flex items-center gap-2 py-2 px-5 rounded-xl font-semibold transition duration-300 ease-in-out ${
+              currentPage === 'profile' ? 'bg-indigo-600 text-white shadow-md' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+            }`}
+          >
+            <User size={20} />
+            ملفي الشخصي
+          </button>
+        </div>
+
+        {/* User Info Section (always visible) */}
+        <div className="bg-blue-50 p-6 rounded-2xl shadow-inner flex flex-col md:flex-row items-center space-y-4 md:space-y-0 md:space-x-4 rtl:md:space-x-reverse">
+          <User className="w-8 h-8 text-blue-600 flex-shrink-0" />
+          <div className="flex-grow text-center md:text-start">
+            <p className="text-lg font-medium text-blue-800">
+              معرف المستخدم: <span className="font-bold text-blue-900 break-all">{userId || "جاري التحميل..."}</span>
+            </p>
+            <p className="text-lg font-medium text-blue-800 mt-1">
+              اسم العرض: <span className="font-bold text-blue-900">{displayName || "جاري التحميل..."}</span>
+            </p>
+          </div>
+          <button
+            onClick={() => { setTempDisplayName(displayName); setIsSettingDisplayName(true); }}
+            className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-xl shadow-md transition duration-300 ease-in-out transform hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed"
+            disabled={!authReady || loading}
+          >
+            تغيير اسم العرض
+          </button>
+        </div>
+
+        {/* Display Name Modal */}
+        {isSettingDisplayName && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6">
+              <h3 className="text-2xl font-bold text-gray-800 mb-4">تغيير اسم العرض</h3>
+              <form onSubmit={handleDisplayNameUpdate} className="flex flex-col space-y-4">
+                <input
+                  type="text"
+                  className="w-full p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-indigo-400 focus:border-transparent outline-none transition duration-200"
+                  value={tempDisplayName}
+                  onChange={(e) => setTempDisplayName(e.target.value)}
+                  placeholder="أدخل اسم العرض الجديد"
+                  maxLength={50}
+                />
+                <div className="flex justify-end space-x-3 rtl:space-x-reverse">
+                  <button
+                    type="button"
+                    onClick={() => setIsSettingDisplayName(false)}
+                    className="bg-gray-300 hover:bg-gray-400 text-gray-800 font-bold py-2 px-4 rounded-xl transition duration-200"
+                  >
+                    إلغاء
+                  </button>
+                  <button
+                    type="submit"
+                    className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded-xl shadow-md transition duration-300 disabled:opacity-50 disabled:cursor-not-allowed"
+                    disabled={!tempDisplayName.trim()}
+                  >
+                    حفظ
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+
+        {/* Main Content Area based on currentPage */}
+        {currentPage === 'feed' && (
+          <>
+            {/* Create Post Section */}
+            <div className="bg-white p-6 rounded-2xl shadow-lg border border-gray-100">
+              <h2 className="text-2xl font-bold text-gray-700 mb-4 flex items-center gap-2">
+                <Send className="w-6 h-6 text-green-600" />
+                أنشئ منشورًا جديدًا
+              </h2>
+              <form onSubmit={handlePostSubmit} className="flex flex-col space-y-4">
+                <textarea
+                  className="w-full p-4 border border-gray-300 rounded-xl focus:ring-2 focus:ring-indigo-400 focus:border-transparent outline-none transition duration-200 resize-y min-h-[100px]"
+                  placeholder="ماذا يدور في ذهنك اليوم؟"
+                  value={newPostContent}
+                  onChange={(e) => setNewPostContent(e.target.value)}
+                  disabled={!authReady || loading}
+                ></textarea>
+                <div className="flex items-center gap-2">
+                  <Image className="w-5 h-5 text-gray-500" />
+                  <input
+                    type="url"
+                    className="flex-grow p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-indigo-400 focus:border-transparent outline-none transition duration-200"
+                    placeholder="رابط الصورة (URL) اختياري"
+                    value={newPostImageUrl}
+                    onChange={(e) => setNewPostImageUrl(e.target.value)}
+                    disabled={!authReady || loading}
+                  />
+                </div>
+                <button
+                  type="submit"
+                  className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-6 rounded-xl shadow-md transition duration-300 ease-in-out transform hover:scale-105 flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                  disabled={!authReady || loading || (!newPostContent.trim() && !newPostImageUrl.trim())}
+                >
+                  {loading ? (
+                    <Loader2 className="animate-spin mr-2" size={20} />
+                  ) : (
+                    <Send size={20} />
+                  )}
+                  نشر
+                </button>
+              </form>
+            </div>
+
+            {/* Posts Feed Section */}
+            <div className="bg-white p-6 rounded-2xl shadow-lg border border-gray-100">
+              <h2 className="text-2xl font-bold text-gray-700 mb-4 flex items-center gap-2">
+                <MessageSquare className="w-6 h-6 text-purple-600" />
+                آخر المنشورات
+              </h2>
+              {loading && posts.length === 0 && (
+                <div className="flex items-center justify-center py-8 text-indigo-500">
+                  <Loader2 className="animate-spin mr-2" size={24} />
+                  <p>جاري تحميل المنشورات...</p>
+                </div>
+              )}
+              {!loading && posts.length === 0 && (
+                <p className="text-gray-500 text-center py-8">لا توجد منشورات حتى الآن. كن أول من ينشر!</p>
+              )}
+              <div className="space-y-4 max-h-[600px] overflow-y-auto custom-scrollbar pr-2">
+                {posts.map((post) => (
+                  <div key={post.id} className="bg-gray-50 p-4 rounded-xl shadow-sm border border-gray-200">
+                    <p className="text-sm text-gray-500 mb-2">
+                      <span className="font-semibold text-indigo-600 break-all">{post.displayName || post.userId}</span> •{' '}
+                      {post.timestamp ? new Date(post.timestamp.toDate()).toLocaleString('ar-EG', {
+                        year: 'numeric', month: 'short', day: 'numeric',
+                        hour: '2-digit', minute: '2-digit'
+                      }) : 'جاري التحميل...'}
+                    </p>
+
+                    {editingPostId === post.id ? (
+                      <div className="flex flex-col space-y-3 mb-3">
+                        <textarea
+                          className="w-full p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-indigo-400 focus:border-transparent outline-none transition duration-200 resize-y min-h-[80px]"
+                          value={editedPostContent}
+                          onChange={(e) => setEditedPostContent(e.target.value)}
+                        ></textarea>
+                        <input
+                          type="url"
+                          className="w-full p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-indigo-400 focus:border-transparent outline-none transition duration-200"
+                          placeholder="رابط الصورة (URL) اختياري"
+                          value={editedPostImageUrl}
+                          onChange={(e) => setEditedPostImageUrl(e.target.value)}
+                        />
+                        <div className="flex justify-end space-x-2 rtl:space-x-reverse">
+                          <button
+                            onClick={cancelEditingPost}
+                            className="bg-gray-300 hover:bg-gray-400 text-gray-800 font-bold py-2 px-4 rounded-xl transition duration-200"
+                          >
+                            إلغاء
+                          </button>
+                          <button
+                            onClick={saveEditedPost}
+                            className="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-xl shadow-md transition duration-300 disabled:opacity-50 disabled:cursor-not-allowed"
+                            disabled={!editedPostContent.trim() && !editedPostImageUrl.trim()}
+                          >
+                            حفظ
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        {post.imageUrl && (
+                          <div className="mb-3 rounded-lg overflow-hidden">
+                            <img
+                              src={post.imageUrl}
+                              alt="Post media"
+                              className="w-full h-auto object-cover rounded-lg"
+                              onError={(e) => { e.target.onerror = null; e.target.src = "https://placehold.co/400x200/cccccc/333333?text=خطأ+في+تحميل+الصورة"; }}
+                            />
+                          </div>
+                        )}
+                        <p className="text-gray-800 text-base leading-relaxed whitespace-pre-wrap mb-3">{post.content}</p>
+                      </>
+                    )}
+
+                    <div className="flex items-center justify-between border-t border-gray-200 pt-3">
+                      <div className="flex items-center space-x-4 rtl:space-x-reverse">
+                        <button
+                          onClick={() => handleLikeToggle(post.id, post.likes || [])}
+                          className={`flex items-center gap-1 text-sm font-medium transition duration-200 ${
+                            (post.likes || []).includes(userId) ? 'text-red-500' : 'text-gray-500 hover:text-red-400'
+                          }`}
+                          disabled={!authReady}
+                        >
+                          <Heart size={18} fill={(post.likes || []).includes(userId) ? 'currentColor' : 'none'} />
+                          <span>{post.likes ? post.likes.length : 0}</span>
+                        </button>
+                        <button
+                          onClick={() => openCommentsModal(post.id)}
+                          className="flex items-center gap-1 text-sm font-medium text-gray-500 hover:text-blue-500 transition duration-200"
+                          disabled={!authReady}
+                        >
+                          <MessageCircle size={18} />
+                          <span>تعليقات</span>
+                        </button>
+                      </div>
+                      {post.userId === userId && editingPostId !== post.id && ( // Show edit/delete only for author and not when editing
+                        <div className="flex items-center space-x-2 rtl:space-x-reverse">
+                          <button
+                            onClick={() => startEditingPost(post)}
+                            className="text-gray-500 hover:text-blue-500 transition duration-200"
+                            title="تعديل المنشور"
+                          >
+                            <Edit size={18} />
+                          </button>
+                          <button
+                            onClick={() => confirmDeletePost(post.id)}
+                            className="text-gray-500 hover:text-red-500 transition duration-200"
+                            title="حذف المنشور"
+                          >
+                            <Trash2 size={18} />
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </>
+        )}
+
+        {currentPage === 'profile' && (
+          <div className="bg-white p-6 rounded-2xl shadow-lg border border-gray-100">
+            <h2 className="text-2xl font-bold text-gray-700 mb-4 flex items-center gap-2">
+              <User className="w-6 h-6 text-blue-600" />
+              منشوراتي
+            </h2>
+            {loading && userPosts.length === 0 && (
+              <div className="flex items-center justify-center py-8 text-indigo-500">
+                <Loader2 className="animate-spin mr-2" size={24} />
+                <p>جاري تحميل منشوراتك...</p>
+              </div>
+            )}
+            {!loading && userPosts.length === 0 && (
+              <p className="text-gray-500 text-center py-8">لم تقم بنشر أي شيء بعد.</p>
+            )}
+            <div className="space-y-4 max-h-[600px] overflow-y-auto custom-scrollbar pr-2">
+              {userPosts.map((post) => (
+                <div key={post.id} className="bg-gray-50 p-4 rounded-xl shadow-sm border border-gray-200">
+                  <p className="text-sm text-gray-500 mb-2">
+                    <span className="font-semibold text-indigo-600 break-all">{post.displayName || post.userId}</span> •{' '}
+                    {post.timestamp ? new Date(post.timestamp.toDate()).toLocaleString('ar-EG', {
+                      year: 'numeric', month: 'short', day: 'numeric',
+                      hour: '2-digit', minute: '2-digit'
+                    }) : 'جاري التحميل...'}
+                  </p>
+
+                  {editingPostId === post.id ? (
+                    <div className="flex flex-col space-y-3 mb-3">
+                      <textarea
+                        className="w-full p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-indigo-400 focus:border-transparent outline-none transition duration-200 resize-y min-h-[80px]"
+                        value={editedPostContent}
+                        onChange={(e) => setEditedPostContent(e.target.value)}
+                      ></textarea>
+                      <input
+                        type="url"
+                        className="w-full p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-indigo-400 focus:border-transparent outline-none transition duration-200"
+                        placeholder="رابط الصورة (URL) اختياري"
+                        value={editedPostImageUrl}
+                        onChange={(e) => setEditedPostImageUrl(e.target.value)}
+                      />
+                      <div className="flex justify-end space-x-2 rtl:space-x-reverse">
+                        <button
+                          onClick={cancelEditingPost}
+                          className="bg-gray-300 hover:bg-gray-400 text-gray-800 font-bold py-2 px-4 rounded-xl transition duration-200"
+                        >
+                          إلغاء
+                        </button>
+                        <button
+                          onClick={saveEditedPost}
+                          className="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-xl shadow-md transition duration-300 disabled:opacity-50 disabled:cursor-not-allowed"
+                          disabled={!editedPostContent.trim() && !editedPostImageUrl.trim()}
+                        >
+                          حفظ
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      {post.imageUrl && (
+                        <div className="mb-3 rounded-lg overflow-hidden">
+                          <img
+                            src={post.imageUrl}
+                            alt="Post media"
+                            className="w-full h-auto object-cover rounded-lg"
+                            onError={(e) => { e.target.onerror = null; e.target.src = "https://placehold.co/400x200/cccccc/333333?text=خطأ+في+تحميل+الصورة"; }}
+                          />
+                        </div>
+                      )}
+                      <p className="text-gray-800 text-base leading-relaxed whitespace-pre-wrap mb-3">{post.content}</p>
+                    </>
+                  )}
+
+                  <div className="flex items-center justify-between border-t border-gray-200 pt-3">
+                    <div className="flex items-center space-x-4 rtl:space-x-reverse">
+                      <button
+                        onClick={() => handleLikeToggle(post.id, post.likes || [])}
+                        className={`flex items-center gap-1 text-sm font-medium transition duration-200 ${
+                          (post.likes || []).includes(userId) ? 'text-red-500' : 'text-gray-500 hover:text-red-400'
+                        }`}
+                        disabled={!authReady}
+                      >
+                        <Heart size={18} fill={(post.likes || []).includes(userId) ? 'currentColor' : 'none'} />
+                        <span>{post.likes ? post.likes.length : 0}</span>
+                      </button>
+                      <button
+                        onClick={() => openCommentsModal(post.id)}
+                        className="flex items-center gap-1 text-sm font-medium text-gray-500 hover:text-blue-500 transition duration-200"
+                        disabled={!authReady}
+                      >
+                        <MessageCircle size={18} />
+                        <span>تعليقات</span>
+                      </button>
+                    </div>
+                    {post.userId === userId && editingPostId !== post.id && (
+                      <div className="flex items-center space-x-2 rtl:space-x-reverse">
+                        <button
+                          onClick={() => startEditingPost(post)}
+                          className="text-gray-500 hover:text-blue-500 transition duration-200"
+                          title="تعديل المنشور"
+                        >
+                          <Edit size={18} />
+                        </button>
+                        <button
+                          onClick={() => confirmDeletePost(post.id)}
+                          className="text-gray-500 hover:text-red-500 transition duration-200"
+                          title="حذف المنشور"
+                        >
+                          <Trash2 size={18} />
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {showCommentsModal && (
+        <CommentsModal
+          postId={selectedPostId}
+          onClose={closeCommentsModal}
+          db={db}
+          currentUserId={userId}
+          currentUserDisplayName={displayName}
+        />
+      )}
+
+      {showDeleteConfirm && (
+        <ConfirmationModal
+          message="هل أنت متأكد أنك تريد حذف هذا المنشور؟ سيتم حذف جميع التعليقات المرتبطة به أيضًا."
+          onConfirm={handleDeletePost}
+          onCancel={() => setShowDeleteConfirm(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+export default App;
